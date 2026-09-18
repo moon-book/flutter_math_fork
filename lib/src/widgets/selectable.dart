@@ -2,7 +2,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
 
 import '../ast/options.dart';
@@ -882,7 +881,7 @@ class _RenderSelectableMathAdapter extends RenderProxyBox
     if (value.hasSelection) {
       final Paint selectionPaint = Paint()
         ..style = PaintingStyle.fill
-        ..color = _selectionColor;
+        ..color = _selectionColor.withValues(alpha: 0.5);
 
       final Rect highlightRect = Rect.fromLTWH(
         0,
