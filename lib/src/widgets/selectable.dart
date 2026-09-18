@@ -1,9 +1,9 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:provider/provider.dart';
-import 'package:tuple/tuple.dart';
 
 import '../ast/options.dart';
 import '../ast/style.dart';
@@ -11,16 +11,10 @@ import '../ast/syntax_tree.dart';
 import '../parser/tex/parse_error.dart';
 import '../parser/tex/parser.dart';
 import '../parser/tex/settings.dart';
-import '../utils/wrapper.dart';
 import 'controller.dart';
 import 'exception.dart';
 import 'math.dart';
 import 'mode.dart';
-import 'selection/cursor_timer_manager.dart';
-import 'selection/focus_manager.dart';
-import 'selection/overlay_manager.dart';
-import 'selection/selection_manager.dart';
-import 'selection/web_selection_manager.dart';
 
 const defaultSelection = TextSelection.collapsed(offset: -1);
 
@@ -59,6 +53,7 @@ class SelectableMath extends StatelessWidget {
     this.textSelectionControls,
     this.textStyle,
     ToolbarOptions? toolbarOptions,
+    this.selectionText,
   })  : assert(ast != null || parseException != null),
         toolbarOptions = toolbarOptions ??
             const ToolbarOptions(
@@ -157,6 +152,12 @@ class SelectableMath extends StatelessWidget {
   /// If not set, select all and copy will be enabled by default.
   final ToolbarOptions toolbarOptions;
 
+  /// Raw text returned when the whole math expression is selected/copied.
+  ///
+  /// This is intentionally treated as one selectable unit. It can contain
+  /// the original TeX delimiters if the caller wants them copied.
+  final String? selectionText;
+
   /// SelectableMath builder using a TeX string
   ///
   /// {@macro flutter_math_fork.widgets.math.tex_builder}
@@ -186,6 +187,7 @@ class SelectableMath extends StatelessWidget {
     TextSelectionControls? textSelectionControls,
     TextStyle? textStyle,
     ToolbarOptions? toolbarOptions,
+    String? selectionText,
   }) {
     SyntaxTree? ast;
     ParseException? parseError;
@@ -218,6 +220,7 @@ class SelectableMath extends StatelessWidget {
       textSelectionControls: textSelectionControls,
       textStyle: textStyle,
       toolbarOptions: toolbarOptions,
+      selectionText: selectionText ?? expression,
     );
   }
 
@@ -231,12 +234,10 @@ class SelectableMath extends StatelessWidget {
       effectiveTextStyle = DefaultTextStyle.of(context).style.merge(textStyle);
     }
     if (MediaQuery.boldTextOf(context)) {
-      effectiveTextStyle = effectiveTextStyle
-          .merge(const TextStyle(fontWeight: FontWeight.bold));
+      effectiveTextStyle = effectiveTextStyle.merge(const TextStyle(fontWeight: FontWeight.bold));
     }
 
-    final textScaleFactor =
-        this.textScaleFactor ?? MediaQuery.textScaleFactorOf(context);
+    final textScaleFactor = this.textScaleFactor ?? MediaQuery.textScaleFactorOf(context);
 
     final options = this.options ??
         MathOptions(
@@ -255,9 +256,8 @@ class SelectableMath extends StatelessWidget {
     } on BuildException catch (e) {
       return onErrorFallback(e);
     } on Object catch (e) {
-      return onErrorFallback(
-          BuildException('Unsanitized build exception detected: $e.'
-              'Please report this error with correponding input.'));
+      return onErrorFallback(BuildException('Unsanitized build exception detected: $e.'
+          'Please report this error with correponding input.'));
     }
 
     final theme = Theme.of(context);
@@ -280,14 +280,11 @@ class SelectableMath extends StatelessWidget {
         textSelectionControls ??= cupertinoTextSelectionControls;
         paintCursorAboveText = true;
         cursorOpacityAnimates = true;
-        cursorColor ??= selectionTheme.cursorColor ??
-            CupertinoTheme.of(context).primaryColor;
-        selectionColor = selectionTheme.selectionColor ??
-            CupertinoTheme.of(context).primaryColor;
+        cursorColor ??= selectionTheme.cursorColor ?? CupertinoTheme.of(context).primaryColor;
+        selectionColor = selectionTheme.selectionColor ?? CupertinoTheme.of(context).primaryColor;
 
         cursorRadius ??= const Radius.circular(2.0);
-        cursorOffset = Offset(
-            iOSHorizontalOffset / MediaQuery.of(context).devicePixelRatio, 0);
+        cursorOffset = Offset(iOSHorizontalOffset / MediaQuery.of(context).devicePixelRatio, 0);
         break;
 
       case TargetPlatform.android:
@@ -299,8 +296,7 @@ class SelectableMath extends StatelessWidget {
         paintCursorAboveText = false;
         cursorOpacityAnimates = false;
         cursorColor ??= selectionTheme.cursorColor ?? theme.colorScheme.primary;
-        selectionColor =
-            selectionTheme.selectionColor ?? theme.colorScheme.primary;
+        selectionColor = selectionTheme.selectionColor ?? theme.colorScheme.primary;
 
         break;
     }
@@ -308,255 +304,557 @@ class SelectableMath extends StatelessWidget {
     return RepaintBoundary(
       child: InternalSelectableMath(
         ast: ast!,
-        autofocus: autofocus,
-        cursorColor: cursorColor,
-        cursorOffset: cursorOffset,
-        cursorOpacityAnimates: cursorOpacityAnimates,
-        cursorRadius: cursorRadius,
-        cursorWidth: cursorWidth,
-        cursorHeight: cursorHeight,
-        dragStartBehavior: dragStartBehavior,
-        enableInteractiveSelection: enableInteractiveSelection,
-        focusNode: focusNode,
-        forcePressEnabled: forcePressEnabled,
         options: options,
-        paintCursorAboveText: paintCursorAboveText,
+        cursorColor: cursorColor,
         selectionColor: selectionColor,
-        showCursor: showCursor,
-        textSelectionControls: textSelectionControls,
-        toolbarOptions: toolbarOptions,
+        selectionText: selectionText,
       ),
     );
   }
 
   /// Default fallback function for [Math], [SelectableMath]
-  static Widget defaultOnErrorFallback(FlutterMathException error) =>
-      Math.defaultOnErrorFallback(error);
+  static Widget defaultOnErrorFallback(FlutterMathException error) => Math.defaultOnErrorFallback(error);
 }
 
-/// The internal widget for [SelectableMath] when no errors are encountered.
+/// The internal widget for [SelectableMath].
+///
+/// This implementation participates in Flutter's modern Selection API.
+/// The complete math expression is treated as one selectable unit.
+///
+/// That means:
+///   Text -> Math -> Text
+///
+/// can be selected as one SelectionArea, while copying the math returns
+/// [selectionText] verbatim.
 class InternalSelectableMath extends StatefulWidget {
   const InternalSelectableMath({
     Key? key,
     required this.ast,
-    this.autofocus = false,
-    required this.cursorColor,
-    this.cursorOffset,
-    this.cursorOpacityAnimates = false,
-    this.cursorRadius,
-    this.cursorWidth = 2.0,
-    this.cursorHeight,
-    this.dragStartBehavior = DragStartBehavior.start,
-    this.enableInteractiveSelection = true,
-    this.forcePressEnabled = false,
-    this.focusNode,
-    this.hintingColor,
     required this.options,
-    this.paintCursorAboveText = false,
-    this.selectionColor,
-    this.showCursor = false,
-    required this.textSelectionControls,
-    required this.toolbarOptions,
+    required this.cursorColor,
+    required this.selectionColor,
+    this.selectionText,
   }) : super(key: key);
 
   final SyntaxTree ast;
-
-  final bool autofocus;
-
-  final Color cursorColor;
-
-  final Offset? cursorOffset;
-
-  final bool cursorOpacityAnimates;
-
-  final Radius? cursorRadius;
-
-  final double cursorWidth;
-
-  final double? cursorHeight;
-
-  final DragStartBehavior dragStartBehavior;
-
-  final bool enableInteractiveSelection;
-
-  final FocusNode? focusNode;
-
-  final bool forcePressEnabled;
-
-  final Color? hintingColor;
-
   final MathOptions options;
-
-  final bool paintCursorAboveText;
-
+  final Color cursorColor;
   final Color? selectionColor;
-
-  final bool showCursor;
-
-  final TextSelectionControls textSelectionControls;
-
-  final ToolbarOptions toolbarOptions;
+  final String? selectionText;
 
   @override
-  InternalSelectableMathState createState() => InternalSelectableMathState();
+  State<InternalSelectableMath> createState() => _InternalSelectableMathState();
 }
 
-class InternalSelectableMathState extends State<InternalSelectableMath>
-    with
-        AutomaticKeepAliveClientMixin,
-        FocusManagerMixin,
-        SelectionManagerMixin,
-        SelectionOverlayManagerMixin,
-        WebSelectionControlsManagerMixin,
-        SingleTickerProviderStateMixin,
-        CursorTimerManagerMixin {
-  TextSelectionControls get textSelectionControls =>
-      widget.textSelectionControls;
-
-  FocusNode? _focusNode;
-
-  FocusNode get focusNode => widget.focusNode ?? (_focusNode ??= FocusNode());
-
-  bool get showCursor => widget.showCursor; //?? false;
-
-  bool get cursorOpacityAnimates => widget.cursorOpacityAnimates;
-
-  DragStartBehavior get dragStartBehavior => widget.dragStartBehavior;
-
+class _InternalSelectableMathState extends State<InternalSelectableMath> {
   late MathController controller;
-
-  late FocusNode _oldFocusNode;
 
   @override
   void initState() {
-    controller = MathController(ast: widget.ast);
-    _oldFocusNode = focusNode..addListener(updateKeepAlive);
     super.initState();
+
+    controller = MathController(
+      ast: widget.ast,
+    );
   }
 
   @override
-  void didUpdateWidget(InternalSelectableMath oldWidget) {
-    if (widget.ast != controller.ast) {
-      controller = MathController(ast: widget.ast);
-    }
-    if (_oldFocusNode != focusNode) {
-      _oldFocusNode.removeListener(updateKeepAlive);
-      _oldFocusNode = focusNode..addListener(updateKeepAlive);
-    }
+  void didUpdateWidget(
+    covariant InternalSelectableMath oldWidget,
+  ) {
     super.didUpdateWidget(oldWidget);
-  }
 
-  bool _didAutoFocus = false;
+    if (oldWidget.ast != widget.ast) {
+      controller.dispose();
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_didAutoFocus && widget.autofocus) {
-      _didAutoFocus = true;
-      SchedulerBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          FocusScope.of(context).autofocus(widget.focusNode!);
-        }
-      });
+      controller = MathController(
+        ast: widget.ast,
+      );
     }
   }
 
   @override
   void dispose() {
-    _oldFocusNode.removeListener(updateKeepAlive);
-    super.dispose();
     controller.dispose();
+    super.dispose();
   }
 
-  void onSelectionChanged(
-      TextSelection selection, SelectionChangedCause? cause) {
-    switch (Theme.of(context).platform) {
-      case TargetPlatform.iOS:
-      case TargetPlatform.macOS:
-        if (cause == SelectionChangedCause.longPress) {
-          bringIntoView(selection.base);
-        }
-        return;
-      case TargetPlatform.android:
-      case TargetPlatform.fuchsia:
-      case TargetPlatform.linux:
-      case TargetPlatform.windows:
-      // Do nothing.
-    }
-  }
-
+  @override
   Widget build(BuildContext context) {
-    super.build(context); // See AutomaticKeepAliveClientMixin.
+    final SelectionRegistrar? registrar = SelectionContainer.maybeOf(context);
 
-    final child = controller.ast.buildWidget(widget.options);
-
-    return selectionGestureDetectorBuilder.buildGestureDetector(
-      child: MouseRegion(
-        cursor: SystemMouseCursors.text,
-        child: CompositedTransformTarget(
-          link: toolbarLayerLink,
-          child: MultiProvider(
-            providers: [
-              Provider.value(value: FlutterMathMode.select),
-              ChangeNotifierProvider.value(value: controller),
-              ProxyProvider<MathController, TextSelection>(
-                create: (context) => const TextSelection.collapsed(offset: -1),
-                update: (context, value, previous) => value.selection,
-              ),
-              Provider.value(
-                value: SelectionStyle(
-                  cursorColor: widget.cursorColor,
-                  cursorOffset: widget.cursorOffset,
-                  cursorRadius: widget.cursorRadius,
-                  cursorWidth: widget.cursorWidth,
-                  cursorHeight: widget.cursorHeight,
-                  selectionColor: widget.selectionColor,
-                  paintCursorAboveText: widget.paintCursorAboveText,
-                ),
-              ),
-              Provider.value(
-                value: Tuple2(startHandleLayerLink, endHandleLayerLink),
-              ),
-              // We can't just provide an AnimationController, otherwise
-              // Provider will throw
-              Provider.value(value: Wrapper(cursorBlinkOpacityController)),
-            ],
-            child: child,
-          ),
-        ),
+    final Widget math = Provider<FlutterMathMode>.value(
+      value: FlutterMathMode.view,
+      child: controller.ast.buildWidget(
+        widget.options,
       ),
+    );
+
+    // Outside SelectionArea/SelectableRegion there is no registrar.
+    // In that case SelectableMath simply behaves like normal Math.
+    if (registrar == null) {
+      return math;
+    }
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.text,
+      child: _SelectableMathAdapter(
+        registrar: registrar,
+        selectionColor: widget.selectionColor ?? DefaultSelectionStyle.of(context).selectionColor!,
+        selectionText: widget.selectionText ?? '',
+        child: math,
+      ),
+    );
+  }
+}
+
+/// Adapter that makes the rendered math participate in Flutter's
+/// SelectionArea/SelectableRegion selection tree.
+class _SelectableMathAdapter extends SingleChildRenderObjectWidget {
+  const _SelectableMathAdapter({
+    required this.registrar,
+    required this.selectionColor,
+    required this.selectionText,
+    required Widget child,
+  }) : super(child: child);
+
+  final SelectionRegistrar registrar;
+  final Color selectionColor;
+  final String selectionText;
+
+  @override
+  _RenderSelectableMathAdapter createRenderObject(
+    BuildContext context,
+  ) {
+    return _RenderSelectableMathAdapter(
+      selectionColor,
+      selectionText,
+      registrar,
     );
   }
 
   @override
-  bool get wantKeepAlive => hasFocus;
+  void updateRenderObject(
+    BuildContext context,
+    _RenderSelectableMathAdapter renderObject,
+  ) {
+    renderObject
+      ..selectionColor = selectionColor
+      ..selectionText = selectionText
+      ..registrar = registrar;
+  }
+}
+
+/// A selectable render object representing one complete math expression.
+///
+/// The important design decision here is:
+///
+///     contentLength == 1
+///
+/// The math is therefore one logical selectable unit. We do not try to map
+/// screen coordinates to individual AST nodes or TeX characters.
+///
+/// This makes it possible for Flutter's SelectionContainer to move selection
+/// from:
+///
+///     Text -> Math -> Text
+///
+/// while [getSelectedContent] returns the original raw TeX for the math.
+class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, SelectionRegistrant {
+  _RenderSelectableMathAdapter(
+    Color selectionColor,
+    String selectionText,
+    SelectionRegistrar registrar,
+  )   : _selectionColor = selectionColor,
+        _selectionText = selectionText,
+        _geometry = ValueNotifier<SelectionGeometry>(
+          _noSelection,
+        ) {
+    this.registrar = registrar;
+    _geometry.addListener(markNeedsPaint);
+  }
+
+  static const SelectionGeometry _noSelection = SelectionGeometry(
+    status: SelectionStatus.none,
+    hasContent: true,
+  );
+
+  final ValueNotifier<SelectionGeometry> _geometry;
+
+  Color _selectionColor;
+
+  Color get selectionColor => _selectionColor;
+
+  set selectionColor(Color value) {
+    if (_selectionColor == value) {
+      return;
+    }
+
+    _selectionColor = value;
+    markNeedsPaint();
+  }
+
+  String _selectionText;
+
+  String get selectionText => _selectionText;
+
+  set selectionText(String value) {
+    if (_selectionText == value) {
+      return;
+    }
+
+    _selectionText = value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ValueListenable<SelectionGeometry>
+  // ---------------------------------------------------------------------------
 
   @override
-  bool get copyEnabled => widget.toolbarOptions.copy;
+  void addListener(VoidCallback listener) {
+    _geometry.addListener(listener);
+  }
 
   @override
-  bool get cutEnabled => false;
+  void removeListener(VoidCallback listener) {
+    _geometry.removeListener(listener);
+  }
 
   @override
-  bool get pasteEnabled => false;
+  SelectionGeometry get value => _geometry.value;
+
+  // ---------------------------------------------------------------------------
+  // Selectable
+  // ---------------------------------------------------------------------------
 
   @override
-  bool get selectAllEnabled => widget.toolbarOptions.selectAll;
+  List<Rect> get boundingBoxes => <Rect>[paintBounds];
 
   @override
-  bool get forcePressEnabled => widget.forcePressEnabled;
+  int get contentLength => 1;
+
+  Offset? _start;
+  Offset? _end;
+
+  LayerLink? _startHandle;
+  LayerLink? _endHandle;
+
+  void _updateGeometry() {
+    if (_start == null || _end == null) {
+      _geometry.value = _noSelection;
+      return;
+    }
+
+    final Rect renderObjectRect = Rect.fromLTWH(
+      0,
+      0,
+      size.width,
+      size.height,
+    );
+
+    final Rect selectionRect = Rect.fromPoints(
+      _start!,
+      _end!,
+    );
+
+    if (renderObjectRect.intersect(selectionRect).isEmpty) {
+      _geometry.value = _noSelection;
+      return;
+    }
+
+    final Rect highlightRect = renderObjectRect;
+
+    final SelectionPoint firstSelectionPoint = SelectionPoint(
+      localPosition: highlightRect.bottomLeft,
+      lineHeight: highlightRect.height,
+      handleType: TextSelectionHandleType.left,
+    );
+
+    final SelectionPoint secondSelectionPoint = SelectionPoint(
+      localPosition: highlightRect.bottomRight,
+      lineHeight: highlightRect.height,
+      handleType: TextSelectionHandleType.right,
+    );
+
+    final bool isReversed;
+
+    if (_start!.dy > _end!.dy) {
+      isReversed = true;
+    } else if (_start!.dy < _end!.dy) {
+      isReversed = false;
+    } else {
+      isReversed = _start!.dx > _end!.dx;
+    }
+
+    _geometry.value = SelectionGeometry(
+      status: SelectionStatus.uncollapsed,
+      hasContent: true,
+      startSelectionPoint: isReversed ? secondSelectionPoint : firstSelectionPoint,
+      endSelectionPoint: isReversed ? firstSelectionPoint : secondSelectionPoint,
+      selectionRects: <Rect>[
+        highlightRect,
+      ],
+    );
+  }
 
   @override
-  bool get selectionEnabled => widget.enableInteractiveSelection;
+  SelectionResult dispatchSelectionEvent(
+    SelectionEvent event,
+  ) {
+    SelectionResult result = SelectionResult.none;
+
+    switch (event.type) {
+      case SelectionEventType.startEdgeUpdate:
+      case SelectionEventType.endEdgeUpdate:
+        final Rect renderObjectRect = Rect.fromLTWH(
+          0,
+          0,
+          size.width,
+          size.height,
+        );
+
+        final Offset point = globalToLocal(
+          (event as SelectionEdgeUpdateEvent).globalPosition,
+        );
+
+        final Offset adjustedPoint = SelectionUtils.adjustDragOffset(
+          renderObjectRect,
+          point,
+        );
+
+        if (event.type == SelectionEventType.startEdgeUpdate) {
+          _start = adjustedPoint;
+        } else {
+          _end = adjustedPoint;
+        }
+
+        result = SelectionUtils.getResultBasedOnRect(
+          renderObjectRect,
+          point,
+        );
+        break;
+
+      case SelectionEventType.clear:
+        _start = null;
+        _end = null;
+        break;
+
+      case SelectionEventType.selectAll:
+      case SelectionEventType.selectWord:
+      case SelectionEventType.selectParagraph:
+        // The complete formula is one logical selectable unit.
+        _start = Offset.zero;
+        _end = Offset.infinite;
+        break;
+
+      case SelectionEventType.granularlyExtendSelection:
+        result = SelectionResult.end;
+
+        final GranularlyExtendSelectionEvent extendSelectionEvent = event as GranularlyExtendSelectionEvent;
+
+        if (_start == null || _end == null) {
+          if (extendSelectionEvent.forward) {
+            _start = _end = Offset.zero;
+          } else {
+            _start = _end = Offset.infinite;
+          }
+        }
+
+        final Offset newOffset = extendSelectionEvent.forward ? Offset.infinite : Offset.zero;
+
+        if (extendSelectionEvent.isEnd) {
+          if (newOffset == _end) {
+            result = extendSelectionEvent.forward ? SelectionResult.next : SelectionResult.previous;
+          }
+
+          _end = newOffset;
+        } else {
+          if (newOffset == _start) {
+            result = extendSelectionEvent.forward ? SelectionResult.next : SelectionResult.previous;
+          }
+
+          _start = newOffset;
+        }
+        break;
+
+      case SelectionEventType.directionallyExtendSelection:
+        result = SelectionResult.end;
+
+        final DirectionallyExtendSelectionEvent extendSelectionEvent = event as DirectionallyExtendSelectionEvent;
+
+        final double horizontalBaseLine = globalToLocal(
+          Offset(event.dx, 0),
+        ).dx;
+
+        final Offset newOffset;
+        final bool forward;
+
+        switch (extendSelectionEvent.direction) {
+          case SelectionExtendDirection.backward:
+          case SelectionExtendDirection.previousLine:
+            forward = false;
+
+            if (_start == null || _end == null) {
+              _start = _end = Offset.infinite;
+            }
+
+            if (extendSelectionEvent.direction == SelectionExtendDirection.previousLine || horizontalBaseLine < 0) {
+              newOffset = Offset.zero;
+            } else {
+              newOffset = Offset.infinite;
+            }
+            break;
+
+          case SelectionExtendDirection.nextLine:
+          case SelectionExtendDirection.forward:
+            forward = true;
+
+            if (_start == null || _end == null) {
+              _start = _end = Offset.zero;
+            }
+
+            if (extendSelectionEvent.direction == SelectionExtendDirection.nextLine || horizontalBaseLine > size.width) {
+              newOffset = Offset.infinite;
+            } else {
+              newOffset = Offset.zero;
+            }
+            break;
+        }
+
+        if (extendSelectionEvent.isEnd) {
+          if (newOffset == _end) {
+            result = forward ? SelectionResult.next : SelectionResult.previous;
+          }
+
+          _end = newOffset;
+        } else {
+          if (newOffset == _start) {
+            result = forward ? SelectionResult.next : SelectionResult.previous;
+          }
+
+          _start = newOffset;
+        }
+        break;
+    }
+
+    _updateGeometry();
+
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Copy
+  // ---------------------------------------------------------------------------
 
   @override
-  double get preferredLineHeight => widget.options.fontSize;
+  SelectedContent? getSelectedContent() {
+    if (!value.hasSelection) {
+      return null;
+    }
+
+    return SelectedContent(
+      plainText: _selectionText,
+    );
+  }
 
   @override
-  dynamic noSuchMethod(Invocation invocation) {
-    // We override noSuchMethod since we do not have concrete implementations
-    // for all methods of the selection manager mixins.
-    throw NoSuchMethodError.withInvocation(this, invocation);
+  SelectedContentRange? getSelection() {
+    if (!value.hasSelection) {
+      return null;
+    }
+
+    // The complete formula is one logical character/unit.
+    return const SelectedContentRange(
+      startOffset: 0,
+      endOffset: 1,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selection handles
+  // ---------------------------------------------------------------------------
+
+  @override
+  void pushHandleLayers(
+    LayerLink? startHandle,
+    LayerLink? endHandle,
+  ) {
+    if (_startHandle == startHandle && _endHandle == endHandle) {
+      return;
+    }
+
+    _startHandle = startHandle;
+    _endHandle = endHandle;
+
+    markNeedsPaint();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Painting
+  // ---------------------------------------------------------------------------
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset offset,
+  ) {
+    // 1. Vẽ background selection TRƯỚC
+    // để công thức vẫn được vẽ lên phía trên.
+    if (value.hasSelection) {
+      final Paint selectionPaint = Paint()
+        ..style = PaintingStyle.fill
+        ..color = _selectionColor;
+
+      final Rect highlightRect = Rect.fromLTWH(
+        0,
+        0,
+        size.width,
+        size.height,
+      );
+
+      context.canvas.drawRect(
+        highlightRect.shift(offset),
+        selectionPaint,
+      );
+    }
+
+    // 2. Vẽ công thức lên trên selection background.
+    super.paint(context, offset);
+
+    // 3. Vẽ selection handles.
+    if (!value.hasSelection) {
+      return;
+    }
+
+    if (_startHandle != null && value.startSelectionPoint != null) {
+      context.pushLayer(
+        LeaderLayer(
+          link: _startHandle!,
+          offset: offset + value.startSelectionPoint!.localPosition,
+        ),
+        (PaintingContext context, Offset offset) {},
+        Offset.zero,
+      );
+    }
+
+    if (_endHandle != null && value.endSelectionPoint != null) {
+      context.pushLayer(
+        LeaderLayer(
+          link: _endHandle!,
+          offset: offset + value.endSelectionPoint!.localPosition,
+        ),
+        (PaintingContext context, Offset offset) {},
+        Offset.zero,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _geometry.dispose();
+    _startHandle = null;
+    _endHandle = null;
+    super.dispose();
   }
 }
 
