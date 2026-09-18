@@ -8,6 +8,8 @@ import 'package:provider/provider.dart';
 import '../ast/options.dart';
 import '../ast/style.dart';
 import '../ast/syntax_tree.dart';
+import '../ast/tex_break.dart';
+import '../encoder/tex/encoder.dart';
 import '../parser/tex/parse_error.dart';
 import '../parser/tex/parser.dart';
 import '../parser/tex/settings.dart';
@@ -224,6 +226,59 @@ class SelectableMath extends StatelessWidget {
     );
   }
 
+  /// Line breaking results using standard TeX-style line breaking.
+  ///
+  /// This is the selectable equivalent of [Math.texBreak]. Each returned
+  /// piece keeps the selection configuration of this widget. When a piece is
+  /// copied on its own, its encoded TeX is returned as the selected content.
+  BreakResult<SelectableMath> texBreak({
+    int relPenalty = 500,
+    int binOpPenalty = 700,
+    bool enforceNoBreak = true,
+  }) {
+    final ast = this.ast;
+    if (ast == null || parseException != null) {
+      return BreakResult(parts: [this], penalties: [10000]);
+    }
+
+    final astBreakResult = ast.texBreak(
+      relPenalty: relPenalty,
+      binOpPenalty: binOpPenalty,
+      enforceNoBreak: enforceNoBreak,
+    );
+
+    final parts = astBreakResult.parts;
+    return BreakResult(
+      parts: List<SelectableMath>.generate(parts.length, (index) {
+        final part = parts[index];
+        return SelectableMath(
+          ast: part,
+          autofocus: autofocus,
+          cursorColor: cursorColor,
+          cursorRadius: cursorRadius,
+          cursorWidth: cursorWidth,
+          cursorHeight: cursorHeight,
+          dragStartBehavior: dragStartBehavior,
+          enableInteractiveSelection: enableInteractiveSelection,
+          focusNode: index == 0 ? focusNode : null,
+          mathStyle: mathStyle,
+          logicalPpi: logicalPpi,
+          onErrorFallback: onErrorFallback,
+          options: options,
+          showCursor: showCursor,
+          textScaleFactor: textScaleFactor,
+          textSelectionControls: textSelectionControls,
+          textStyle: textStyle,
+          toolbarOptions: toolbarOptions,
+          selectionText: parts.length == 1 && selectionText != null
+              ? selectionText
+              : part.greenRoot.encodeTeX(),
+        );
+      }).toList(growable: false),
+      penalties: astBreakResult.penalties,
+    );
+  }
+
   Widget build(BuildContext context) {
     if (parseException != null) {
       return onErrorFallback(parseException!);
@@ -234,16 +289,19 @@ class SelectableMath extends StatelessWidget {
       effectiveTextStyle = DefaultTextStyle.of(context).style.merge(textStyle);
     }
     if (MediaQuery.boldTextOf(context)) {
-      effectiveTextStyle = effectiveTextStyle.merge(const TextStyle(fontWeight: FontWeight.bold));
+      effectiveTextStyle = effectiveTextStyle
+          .merge(const TextStyle(fontWeight: FontWeight.bold));
     }
 
-    final textScaleFactor = this.textScaleFactor ?? MediaQuery.textScaleFactorOf(context);
+    final textScaleFactor =
+        this.textScaleFactor ?? MediaQuery.textScaleFactorOf(context);
 
     final options = this.options ??
         MathOptions(
           style: mathStyle,
           fontSize: effectiveTextStyle.fontSize! * textScaleFactor,
-          mathFontOptions: effectiveTextStyle.fontWeight != FontWeight.normal && effectiveTextStyle.fontWeight != null
+          mathFontOptions: effectiveTextStyle.fontWeight != FontWeight.normal &&
+                  effectiveTextStyle.fontWeight != null
               ? FontOptions(fontWeight: effectiveTextStyle.fontWeight!)
               : null,
           logicalPpi: logicalPpi,
@@ -256,8 +314,9 @@ class SelectableMath extends StatelessWidget {
     } on BuildException catch (e) {
       return onErrorFallback(e);
     } on Object catch (e) {
-      return onErrorFallback(BuildException('Unsanitized build exception detected: $e.'
-          'Please report this error with correponding input.'));
+      return onErrorFallback(
+          BuildException('Unsanitized build exception detected: $e.'
+              'Please report this error with correponding input.'));
     }
 
     final theme = Theme.of(context);
@@ -280,11 +339,14 @@ class SelectableMath extends StatelessWidget {
         textSelectionControls ??= cupertinoTextSelectionControls;
         paintCursorAboveText = true;
         cursorOpacityAnimates = true;
-        cursorColor ??= selectionTheme.cursorColor ?? CupertinoTheme.of(context).primaryColor;
-        selectionColor = selectionTheme.selectionColor ?? CupertinoTheme.of(context).primaryColor;
+        cursorColor ??= selectionTheme.cursorColor ??
+            CupertinoTheme.of(context).primaryColor;
+        selectionColor = selectionTheme.selectionColor ??
+            CupertinoTheme.of(context).primaryColor;
 
         cursorRadius ??= const Radius.circular(2.0);
-        cursorOffset = Offset(iOSHorizontalOffset / MediaQuery.of(context).devicePixelRatio, 0);
+        cursorOffset = Offset(
+            iOSHorizontalOffset / MediaQuery.of(context).devicePixelRatio, 0);
         break;
 
       case TargetPlatform.android:
@@ -296,7 +358,8 @@ class SelectableMath extends StatelessWidget {
         paintCursorAboveText = false;
         cursorOpacityAnimates = false;
         cursorColor ??= selectionTheme.cursorColor ?? theme.colorScheme.primary;
-        selectionColor = selectionTheme.selectionColor ?? theme.colorScheme.primary;
+        selectionColor =
+            selectionTheme.selectionColor ?? theme.colorScheme.primary;
 
         break;
     }
@@ -313,7 +376,8 @@ class SelectableMath extends StatelessWidget {
   }
 
   /// Default fallback function for [Math], [SelectableMath]
-  static Widget defaultOnErrorFallback(FlutterMathException error) => Math.defaultOnErrorFallback(error);
+  static Widget defaultOnErrorFallback(FlutterMathException error) =>
+      Math.defaultOnErrorFallback(error);
 }
 
 /// The internal widget for [SelectableMath].
@@ -400,7 +464,8 @@ class _InternalSelectableMathState extends State<InternalSelectableMath> {
       cursor: SystemMouseCursors.text,
       child: _SelectableMathAdapter(
         registrar: registrar,
-        selectionColor: widget.selectionColor ?? DefaultSelectionStyle.of(context).selectionColor!,
+        selectionColor: widget.selectionColor ??
+            DefaultSelectionStyle.of(context).selectionColor!,
         selectionText: widget.selectionText ?? '',
         child: math,
       ),
@@ -460,7 +525,8 @@ class _SelectableMathAdapter extends SingleChildRenderObjectWidget {
 ///     Text -> Math -> Text
 ///
 /// while [getSelectedContent] returns the original raw TeX for the math.
-class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, SelectionRegistrant {
+class _RenderSelectableMathAdapter extends RenderProxyBox
+    with Selectable, SelectionRegistrant {
   _RenderSelectableMathAdapter(
     Color selectionColor,
     String selectionText,
@@ -589,8 +655,10 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
     _geometry.value = SelectionGeometry(
       status: SelectionStatus.uncollapsed,
       hasContent: true,
-      startSelectionPoint: isReversed ? secondSelectionPoint : firstSelectionPoint,
-      endSelectionPoint: isReversed ? firstSelectionPoint : secondSelectionPoint,
+      startSelectionPoint:
+          isReversed ? secondSelectionPoint : firstSelectionPoint,
+      endSelectionPoint:
+          isReversed ? firstSelectionPoint : secondSelectionPoint,
       selectionRects: <Rect>[
         highlightRect,
       ],
@@ -650,7 +718,8 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
       case SelectionEventType.granularlyExtendSelection:
         result = SelectionResult.end;
 
-        final GranularlyExtendSelectionEvent extendSelectionEvent = event as GranularlyExtendSelectionEvent;
+        final GranularlyExtendSelectionEvent extendSelectionEvent =
+            event as GranularlyExtendSelectionEvent;
 
         if (_start == null || _end == null) {
           if (extendSelectionEvent.forward) {
@@ -660,17 +729,22 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
           }
         }
 
-        final Offset newOffset = extendSelectionEvent.forward ? Offset.infinite : Offset.zero;
+        final Offset newOffset =
+            extendSelectionEvent.forward ? Offset.infinite : Offset.zero;
 
         if (extendSelectionEvent.isEnd) {
           if (newOffset == _end) {
-            result = extendSelectionEvent.forward ? SelectionResult.next : SelectionResult.previous;
+            result = extendSelectionEvent.forward
+                ? SelectionResult.next
+                : SelectionResult.previous;
           }
 
           _end = newOffset;
         } else {
           if (newOffset == _start) {
-            result = extendSelectionEvent.forward ? SelectionResult.next : SelectionResult.previous;
+            result = extendSelectionEvent.forward
+                ? SelectionResult.next
+                : SelectionResult.previous;
           }
 
           _start = newOffset;
@@ -680,7 +754,8 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
       case SelectionEventType.directionallyExtendSelection:
         result = SelectionResult.end;
 
-        final DirectionallyExtendSelectionEvent extendSelectionEvent = event as DirectionallyExtendSelectionEvent;
+        final DirectionallyExtendSelectionEvent extendSelectionEvent =
+            event as DirectionallyExtendSelectionEvent;
 
         final double horizontalBaseLine = globalToLocal(
           Offset(event.dx, 0),
@@ -698,7 +773,9 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
               _start = _end = Offset.infinite;
             }
 
-            if (extendSelectionEvent.direction == SelectionExtendDirection.previousLine || horizontalBaseLine < 0) {
+            if (extendSelectionEvent.direction ==
+                    SelectionExtendDirection.previousLine ||
+                horizontalBaseLine < 0) {
               newOffset = Offset.zero;
             } else {
               newOffset = Offset.infinite;
@@ -713,7 +790,9 @@ class _RenderSelectableMathAdapter extends RenderProxyBox with Selectable, Selec
               _start = _end = Offset.zero;
             }
 
-            if (extendSelectionEvent.direction == SelectionExtendDirection.nextLine || horizontalBaseLine > size.width) {
+            if (extendSelectionEvent.direction ==
+                    SelectionExtendDirection.nextLine ||
+                horizontalBaseLine > size.width) {
               newOffset = Offset.infinite;
             } else {
               newOffset = Offset.zero;

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_math_fork/flutter_math.dart';
 
 import 'demo.dart';
 import 'equations.dart';
@@ -19,21 +20,18 @@ class MyApp extends StatelessWidget {
         home: DefaultTabController(
           length: 3,
           child: Scaffold(
-            appBar: AppBar(
-              title: Text(
-                'Flutter Math Demo v0.2.0',
+            body: SelectionArea(
+              child: Column(
+                children: [
+                  const Text('Phương trình:'),
+                  SelectableMath.tex(
+                    r'x^2 + 2x + 1 = 0',
+                    selectionText: r'$x^2 + 2x + 1 = 0$',
+                  ),
+                  const Text('Đây là một phương trình bậc hai.'),
+                ],
               ),
-              bottom: TabBar(tabs: [
-                Text('Interactive Demo'),
-                Text('Equation Samples'),
-                Text('Supported Features'),
-              ]),
             ),
-            body: TabBarView(children: [
-              DemoPage(),
-              EquationsPage(),
-              FeaturePage(),
-            ]),
           ),
         ),
       );
